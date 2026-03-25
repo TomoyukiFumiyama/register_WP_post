@@ -83,7 +83,8 @@ function processWaitingRows() {
       const docId = extractDocId_(docUrl);
       const doc = DocumentApp.openById(docId);
       const title = doc.getName();
-      const content = doc.getBody().getText();
+      const rawContent = doc.getBody().getText();
+      const content = applyDecorations_(rawContent);
 
       const wpStatus = normalizeString_(row[COL.WP_STATUS - 1]) || DEFAULT_WP_STATUS;
       const slug = normalizeString_(row[COL.WP_SLUG - 1]);
@@ -215,4 +216,148 @@ function wpRequest_(config, endpoint, method, payload) {
   }
 
   return response;
+}
+
+function applyDecorations_(content) {
+  let decorated = normalizeString_(content);
+  if (!decorated) {
+    return decorated;
+  }
+
+  decorated = applyMarkerDecoration_(decorated);
+  decorated = applySwellBoxDecoration_(decorated);
+  decorated = applyCaptionBoxDecoration_(decorated);
+  decorated = applyFaqDecoration_(decorated);
+
+  return decorated;
+}
+
+function applyMarkerDecoration_(content) {
+  return content.replace(/==([\s\S]*?)==/g, function(_, text) {
+    return '<mark>' + text.trim() + '</mark>';
+  });
+}
+
+function applySwellBoxDecoration_(content) {
+  const boxDefs = [
+    { tag: 'POINT', icon: '✅', title: 'ポイント・メリット', className: 'swell-box-point' },
+    { tag: 'CAUTION', icon: '⚠️', title: '注意点・デメリット', className: 'swell-box-caution' },
+    { tag: 'NOTE', icon: '💡', title: '補足説明・備考', className: 'swell-box-note' },
+    { tag: 'SUMMARY', icon: '📝', title: '要約・まとめ', className: 'swell-box-summary' },
+  ];
+
+  let decorated = content;
+  boxDefs.forEach(function(def) {
+    const pattern = new RegExp('\\[' + def.tag + '\\]([\\s\\S]*?)\\[/' + def.tag + '\\]', 'g');
+    decorated = decorated.replace(pattern, function(_, body) {
+      return renderBox_(def.icon, def.title, body, def.className);
+    });
+  });
+
+  return decorated;
+}
+
+function applyCaptionBoxDecoration_(content) {
+  const pattern = /\[CAPTION(?::([^\]]+))?\]([\s\S]*?)\[\/CAPTION\]/g;
+  return content.replace(pattern, function(_, title, body) {
+    const boxTitle = normalizeString_(title) || '補足情報';
+    return [
+      '<div class="caption-box">',
+      '  <p class="caption-box__title">' + sanitizeInlineText_(boxTitle) + '</p>',
+      '  <div class="caption-box__body">' + convertLineBreaksToParagraphs_(body) + '</div>',
+      '</div>',
+    ].join('\n');
+  });
+}
+
+function applyFaqDecoration_(content) {
+  const headingPattern = /(^|\n)##\s*よくある質問[^\n]*\n?/;
+  const headingMatch = content.match(headingPattern);
+  if (!headingMatch) {
+    return content;
+  }
+
+  const startIndex = headingMatch.index + headingMatch[0].length;
+  const remain = content.slice(startIndex);
+  const nextHeadingIndex = remain.search(/\n##\s+/);
+  const faqSource = nextHeadingIndex === -1 ? remain : remain.slice(0, nextHeadingIndex);
+  const tail = nextHeadingIndex === -1 ? '' : remain.slice(nextHeadingIndex);
+
+  const entries = [];
+  let currentQuestion = '';
+  let currentAnswer = '';
+
+  faqSource.split('\n').forEach(function(line) {
+    const normalized = normalizeString_(line);
+    if (!normalized) {
+      return;
+    }
+
+    if (/^Q[:：]\s*/.test(normalized)) {
+      if (currentQuestion && currentAnswer) {
+        entries.push({ q: currentQuestion, a: currentAnswer });
+      }
+      currentQuestion = normalized.replace(/^Q[:：]\s*/, '');
+      currentAnswer = '';
+      return;
+    }
+
+    if (/^A[:：]\s*/.test(normalized)) {
+      currentAnswer = normalized.replace(/^A[:：]\s*/, '');
+      return;
+    }
+
+    if (currentAnswer) {
+      currentAnswer += '\n' + normalized;
+    }
+  });
+
+  if (currentQuestion && currentAnswer) {
+    entries.push({ q: currentQuestion, a: currentAnswer });
+  }
+
+  if (entries.length === 0) {
+    return content;
+  }
+
+  const faqHtml = [
+    '## よくある質問',
+    '<div class="faq-block">',
+    entries.map(function(entry) {
+      return [
+        '  <div class="faq-block__item">',
+        '    <p class="faq-block__q">Q. ' + sanitizeInlineText_(entry.q) + '</p>',
+        '    <p class="faq-block__a">A. ' + sanitizeInlineText_(entry.a) + '</p>',
+        '  </div>',
+      ].join('\n');
+    }).join('\n'),
+    '</div>',
+  ].join('\n');
+
+  return content.slice(0, headingMatch.index) + faqHtml + tail;
+}
+
+function renderBox_(icon, title, body, className) {
+  return [
+    '<div class="swell-box ' + className + '">',
+    '  <p class="swell-box__title">' + icon + ' ' + title + '</p>',
+    '  <div class="swell-box__body">' + convertLineBreaksToParagraphs_(body) + '</div>',
+    '</div>',
+  ].join('\n');
+}
+
+function convertLineBreaksToParagraphs_(text) {
+  return normalizeString_(text)
+    .split('\n')
+    .map(function(line) { return normalizeString_(line); })
+    .filter(function(line) { return line !== ''; })
+    .map(function(line) { return '<p>' + sanitizeInlineText_(line) + '</p>'; })
+    .join('');
+}
+
+function sanitizeInlineText_(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }

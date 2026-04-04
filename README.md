@@ -28,6 +28,8 @@ Apps Script エディタの **プロジェクトの設定 → スクリプト �
 
 このスクリプトは `WP_BASE_URL` から REST API の到達先を自動判定しますが、判定に失敗する場合は WordPress 側で REST API が無効化されていないか（セキュリティプラグイン・WAF設定など）も確認してください。
 
+補足: `WP_BASE_URL` に `.../wp-admin` や `.../wp-json`、`...?rest_route=...` を入れても自動で補正を試みます。ただし、最も確実なのは WordPress 設置先のURL（例: `https://example.com` / `https://example.com/wordpress`）を指定することです。
+
 ## シート列定義
 
 - A: 入稿ステータス

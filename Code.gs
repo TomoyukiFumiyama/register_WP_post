@@ -157,11 +157,7 @@ function normalizeWpBaseUrl_(baseUrl) {
 }
 
 function detectApiRoot_(baseUrl, authHeader) {
-  const candidates = [
-    baseUrl + '/wp-json/wp/v2',
-    baseUrl + '/index.php?rest_route=/wp/v2',
-    baseUrl + '/?rest_route=/wp/v2',
-  ];
+  const candidates = buildApiCandidates_(baseUrl);
   const uniqueCandidates = Array.from(new Set(candidates));
   const probeResults = [];
 
@@ -188,6 +184,53 @@ function detectApiRoot_(baseUrl, authHeader) {
     '\n確認したURL: ' + probeResults.join(' / ') +
     '\n補足: WP_BASE_URL には投稿ページURLではなく、WordPress設置先のURLを指定してください。'
   );
+}
+
+function buildApiCandidates_(baseUrl) {
+  const defaults = [
+    baseUrl + '/wp-json/wp/v2',
+    baseUrl + '/index.php?rest_route=/wp/v2',
+    baseUrl + '/?rest_route=/wp/v2',
+    baseUrl + '/wp/wp-json/wp/v2',
+    baseUrl + '/wordpress/wp-json/wp/v2',
+  ];
+  const discovered = discoverApiCandidates_(baseUrl);
+  return discovered.concat(defaults);
+}
+
+function discoverApiCandidates_(baseUrl) {
+  const discovered = [];
+  try {
+    const response = UrlFetchApp.fetch(baseUrl, {
+      method: 'get',
+      muteHttpExceptions: true,
+      followRedirects: true,
+    });
+
+    const linkHeader = response.getHeaders().Link || response.getHeaders().link || '';
+    const linkMatches = String(linkHeader).match(/<([^>]+)>\s*;\s*rel="?https:\/\/api\.w\.org\/"?/i);
+    if (linkMatches && linkMatches[1]) {
+      discovered.push(toWpV2Root_(linkMatches[1]));
+    }
+
+    const html = response.getContentText();
+    const relHrefPattern = /rel=["']https:\/\/api\.w\.org\/["'][^>]*href=["']([^"']+)["']/i;
+    const relHrefMatches = html.match(relHrefPattern);
+    if (relHrefMatches && relHrefMatches[1]) {
+      discovered.push(toWpV2Root_(relHrefMatches[1]));
+    }
+  } catch (e) {
+    // Discovery is best-effort.
+  }
+  return discovered.filter(function(v) { return normalizeString_(v) !== ''; });
+}
+
+function toWpV2Root_(apiRootOrIndex) {
+  const cleaned = String(apiRootOrIndex)
+    .replace(/\/$/, '')
+    .replace(/\/wp-json\/?$/i, '')
+    .replace(/\/index\.php\?rest_route=\/?$/i, '');
+  return cleaned + '/wp-json/wp/v2';
 }
 
 function parseCsv_(value) {

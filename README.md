@@ -19,6 +19,15 @@ Apps Script エディタの **プロジェクトの設定 → スクリプト �
 - `WP_USERNAME`
 - `WP_APP_PASSWORD`
 
+### 404エラー時の確認ポイント
+
+`WordPress APIエラー: HTTP 404` でHTML（「ページが見つかりませんでした」）が返る場合、`WP_BASE_URL` から組み立てた REST API URL が誤っている可能性が高いです。
+
+- OK例: `https://example.com` / `https://example.com/wordpress`
+- NGになりやすい例: 投稿ページURL, `.../wp-json`, `.../wp-json/wp/v2` をそのまま指定
+
+このスクリプトは `WP_BASE_URL` から REST API の到達先を自動判定しますが、判定に失敗する場合は WordPress 側で REST API が無効化されていないか（セキュリティプラグイン・WAF設定など）も確認してください。
+
 ## シート列定義
 
 - A: 入稿ステータス

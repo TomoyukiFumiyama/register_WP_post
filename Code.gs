@@ -135,10 +135,50 @@ function getConfig_() {
     throw new Error('スクリプトプロパティに WP_BASE_URL / WP_USERNAME / WP_APP_PASSWORD を設定してください。');
   }
 
+  const normalizedBaseUrl = normalizeWpBaseUrl_(baseUrl);
+  const authHeader = 'Basic ' + Utilities.base64Encode(username + ':' + appPassword);
+  const apiRoot = detectApiRoot_(normalizedBaseUrl, authHeader);
+
   return {
-    baseUrl: baseUrl.replace(/\/$/, ''),
-    authHeader: 'Basic ' + Utilities.base64Encode(username + ':' + appPassword),
+    baseUrl: normalizedBaseUrl,
+    apiRoot: apiRoot,
+    authHeader: authHeader,
   };
+}
+
+function normalizeWpBaseUrl_(baseUrl) {
+  return baseUrl
+    .replace(/\/$/, '')
+    .replace(/\/wp-json\/wp\/v2\/?$/i, '')
+    .replace(/\/wp-json\/?$/i, '');
+}
+
+function detectApiRoot_(baseUrl, authHeader) {
+  const candidates = [
+    baseUrl + '/wp-json/wp/v2',
+    baseUrl + '/index.php?rest_route=/wp/v2',
+  ];
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidate = candidates[i];
+    const response = UrlFetchApp.fetch(candidate + '/types?context=edit', {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: {
+        Authorization: authHeader,
+      },
+    });
+
+    const code = response.getResponseCode();
+    if (code >= 200 && code < 300) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    'WordPress REST API に接続できませんでした。WP_BASE_URL を確認してください。' +
+    ' 例: https://example.com または https://example.com/wordpress'
+  );
 }
 
 function parseCsv_(value) {
@@ -195,7 +235,7 @@ function upsertPost_(config, payload, postId) {
 }
 
 function wpRequest_(config, endpoint, method, payload) {
-  const url = config.baseUrl + endpoint;
+  const url = config.apiRoot + endpoint.replace('/wp-json/wp/v2', '');
   const options = {
     method: method,
     muteHttpExceptions: true,
@@ -212,10 +252,27 @@ function wpRequest_(config, endpoint, method, payload) {
   const response = UrlFetchApp.fetch(url, options);
   const code = response.getResponseCode();
   if (code < 200 || code >= 300) {
-    throw new Error('WordPress APIエラー: HTTP ' + code + ' / ' + response.getContentText());
+    const contentType = String(response.getHeaders()['Content-Type'] || '').toLowerCase();
+    const rawBody = response.getContentText();
+    const bodyPreview = contentType.indexOf('application/json') !== -1
+      ? rawBody
+      : stripHtml_(rawBody).slice(0, 300);
+    throw new Error(
+      'WordPress APIエラー: HTTP ' + code + ' / ' + bodyPreview +
+      '（WP_BASE_URL または REST API URL が誤っている可能性があります）'
+    );
   }
 
   return response;
+}
+
+function stripHtml_(text) {
+  return String(text)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function applyDecorations_(content) {

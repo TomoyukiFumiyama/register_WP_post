@@ -149,19 +149,25 @@ function getConfig_() {
 function normalizeWpBaseUrl_(baseUrl) {
   return baseUrl
     .replace(/\/$/, '')
+    .replace(/\/wp-admin\/?.*$/i, '')
     .replace(/\/wp-json\/wp\/v2\/?$/i, '')
-    .replace(/\/wp-json\/?$/i, '');
+    .replace(/\/wp-json\/?$/i, '')
+    .replace(/\/index\.php\?rest_route=.*$/i, '')
+    .replace(/\/\?rest_route=.*$/i, '');
 }
 
 function detectApiRoot_(baseUrl, authHeader) {
   const candidates = [
     baseUrl + '/wp-json/wp/v2',
     baseUrl + '/index.php?rest_route=/wp/v2',
+    baseUrl + '/?rest_route=/wp/v2',
   ];
+  const uniqueCandidates = Array.from(new Set(candidates));
+  const probeResults = [];
 
-  for (let i = 0; i < candidates.length; i += 1) {
-    const candidate = candidates[i];
-    const response = UrlFetchApp.fetch(candidate + '/types?context=edit', {
+  for (let i = 0; i < uniqueCandidates.length; i += 1) {
+    const candidate = uniqueCandidates[i];
+    const response = UrlFetchApp.fetch(candidate + '/posts?per_page=1&_fields=id', {
       method: 'get',
       muteHttpExceptions: true,
       headers: {
@@ -173,11 +179,14 @@ function detectApiRoot_(baseUrl, authHeader) {
     if (code >= 200 && code < 300) {
       return candidate;
     }
+    probeResults.push(candidate + ' -> HTTP ' + code);
   }
 
   throw new Error(
     'WordPress REST API に接続できませんでした。WP_BASE_URL を確認してください。' +
-    ' 例: https://example.com または https://example.com/wordpress'
+    ' 例: https://example.com または https://example.com/wordpress' +
+    '\n確認したURL: ' + probeResults.join(' / ') +
+    '\n補足: WP_BASE_URL には投稿ページURLではなく、WordPress設置先のURLを指定してください。'
   );
 }
 

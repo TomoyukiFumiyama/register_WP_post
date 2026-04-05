@@ -83,7 +83,7 @@ function processWaitingRows() {
       const docId = extractDocId_(docUrl);
       const doc = DocumentApp.openById(docId);
       const title = doc.getName();
-      const rawContent = doc.getBody().getText();
+      const rawContent = convertGoogleDocBodyToHtml_(doc.getBody());
       const content = applyDecorations_(rawContent);
 
       const wpStatus = normalizeString_(row[COL.WP_STATUS - 1]) || DEFAULT_WP_STATUS;
@@ -231,6 +231,103 @@ function toWpV2Root_(apiRootOrIndex) {
     .replace(/\/wp-json\/?$/i, '')
     .replace(/\/index\.php\?rest_route=\/?$/i, '');
   return cleaned + '/wp-json/wp/v2';
+}
+
+
+function convertGoogleDocBodyToHtml_(body) {
+  const chunks = [];
+  const total = body.getNumChildren();
+
+  for (let i = 0; i < total; i += 1) {
+    const child = body.getChild(i);
+    const type = child.getType();
+
+    if (type === DocumentApp.ElementType.PARAGRAPH) {
+      const paragraph = child.asParagraph();
+      const html = convertParagraphToHtml_(paragraph);
+      if (html) {
+        chunks.push(html);
+      }
+      continue;
+    }
+
+    if (type === DocumentApp.ElementType.LIST_ITEM) {
+      const listItems = [];
+      while (i < total && body.getChild(i).getType() === DocumentApp.ElementType.LIST_ITEM) {
+        listItems.push(body.getChild(i).asListItem());
+        i += 1;
+      }
+      i -= 1;
+
+      const listHtml = listItems
+        .map(function(item) { return convertInlineElementsToHtml_(item); })
+        .map(function(itemHtml) { return normalizeString_(itemHtml); })
+        .filter(function(itemHtml) { return itemHtml !== ''; })
+        .map(function(itemHtml) { return '<li>' + itemHtml + '</li>'; })
+        .join('');
+
+      if (listHtml) {
+        chunks.push('<ul>' + listHtml + '</ul>');
+      }
+      continue;
+    }
+  }
+
+  return chunks.join('\n');
+}
+
+function convertParagraphToHtml_(paragraph) {
+  const textHtml = normalizeString_(convertInlineElementsToHtml_(paragraph));
+  if (!textHtml) {
+    return '';
+  }
+
+  const headingTag = headingToTag_(paragraph.getHeading());
+  if (headingTag) {
+    return '<' + headingTag + '>' + textHtml + '</' + headingTag + '>';
+  }
+
+  return '<p>' + textHtml + '</p>';
+}
+
+function headingToTag_(heading) {
+  if (heading === DocumentApp.ParagraphHeading.HEADING1) return 'h1';
+  if (heading === DocumentApp.ParagraphHeading.HEADING2) return 'h2';
+  if (heading === DocumentApp.ParagraphHeading.HEADING3) return 'h3';
+  if (heading === DocumentApp.ParagraphHeading.HEADING4) return 'h4';
+  if (heading === DocumentApp.ParagraphHeading.HEADING5) return 'h5';
+  if (heading === DocumentApp.ParagraphHeading.HEADING6) return 'h6';
+  return '';
+}
+
+function convertInlineElementsToHtml_(container) {
+  const parts = [];
+
+  for (let i = 0; i < container.getNumChildren(); i += 1) {
+    const child = container.getChild(i);
+    if (child.getType() !== DocumentApp.ElementType.TEXT) {
+      continue;
+    }
+
+    const textElement = child.asText();
+    const text = textElement.getText();
+    if (!text) {
+      continue;
+    }
+
+    const indices = textElement.getTextAttributeIndices();
+    for (let j = 0; j < indices.length; j += 1) {
+      const start = indices[j];
+      const end = (j + 1 < indices.length ? indices[j + 1] : text.length) - 1;
+      const segment = text.substring(start, end + 1);
+      const escaped = sanitizeInlineText_(segment).replace(/\n/g, '<br>');
+      const attrs = textElement.getAttributes(start);
+      const isBold = !!attrs[DocumentApp.Attribute.BOLD];
+      parts.push(isBold ? '<strong>' + escaped + '</strong>' : escaped);
+    }
+  }
+
+  return parts.join('');
 }
 
 function parseCsv_(value) {

@@ -83,8 +83,12 @@ function processWaitingRows() {
       const docId = extractDocId_(docUrl);
       const doc = DocumentApp.openById(docId);
       const title = doc.getName();
-      const rawContent = convertGoogleDocBodyToHtml_(doc.getBody());
-      const content = applyDecorations_(rawContent);
+      const docContent = convertGoogleDocBodyToHtml_(doc.getBody());
+      const contentWithImages = replaceImagePlaceholders_(
+        docContent.html,
+        uploadDocumentImages_(config, docContent.images, title)
+      );
+      const content = applyDecorations_(contentWithImages);
 
       const wpStatus = normalizeString_(row[COL.WP_STATUS - 1]) || DEFAULT_WP_STATUS;
       const slug = normalizeString_(row[COL.WP_SLUG - 1]);
@@ -235,6 +239,7 @@ function toWpV2Root_(apiRootOrIndex) {
 
 
 function convertGoogleDocBodyToHtml_(body) {
+  const images = [];
   const chunks = [];
   const total = body.getNumChildren();
 
@@ -244,7 +249,7 @@ function convertGoogleDocBodyToHtml_(body) {
 
     if (type === DocumentApp.ElementType.PARAGRAPH) {
       const paragraph = child.asParagraph();
-      const html = convertParagraphToHtml_(paragraph);
+      const html = convertParagraphToHtml_(paragraph, images);
       if (html) {
         chunks.push(html);
       }
@@ -260,7 +265,7 @@ function convertGoogleDocBodyToHtml_(body) {
       i -= 1;
 
       const listHtml = listItems
-        .map(function(item) { return convertInlineElementsToHtml_(item); })
+        .map(function(item) { return convertInlineElementsToHtml_(item, images); })
         .map(function(itemHtml) { return normalizeString_(itemHtml); })
         .filter(function(itemHtml) { return itemHtml !== ''; })
         .map(function(itemHtml) { return '<li>' + itemHtml + '</li>'; })
@@ -273,11 +278,14 @@ function convertGoogleDocBodyToHtml_(body) {
     }
   }
 
-  return chunks.join('\n');
+  return {
+    html: chunks.join('\n'),
+    images: images,
+  };
 }
 
-function convertParagraphToHtml_(paragraph) {
-  const textHtml = normalizeString_(convertInlineElementsToHtml_(paragraph));
+function convertParagraphToHtml_(paragraph, imageCollector) {
+  const textHtml = normalizeString_(convertInlineElementsToHtml_(paragraph, imageCollector));
   if (!textHtml) {
     return '';
   }
@@ -300,12 +308,27 @@ function headingToTag_(heading) {
   return '';
 }
 
-function convertInlineElementsToHtml_(container) {
+function convertInlineElementsToHtml_(container, imageCollector) {
   const parts = [];
 
   for (let i = 0; i < container.getNumChildren(); i += 1) {
     const child = container.getChild(i);
-    if (child.getType() !== DocumentApp.ElementType.TEXT) {
+    const type = child.getType();
+
+    if (type === DocumentApp.ElementType.INLINE_IMAGE) {
+      const inlineImage = child.asInlineImage();
+      const token = createImagePlaceholderToken_(imageCollector.length);
+      const altDescription = normalizeString_(inlineImage.getAltDescription());
+      imageCollector.push({
+        token: token,
+        blob: inlineImage.getBlob(),
+        alt: altDescription,
+      });
+      parts.push(token);
+      continue;
+    }
+
+    if (type !== DocumentApp.ElementType.TEXT) {
       continue;
     }
 
@@ -328,6 +351,78 @@ function convertInlineElementsToHtml_(container) {
   }
 
   return parts.join('');
+}
+
+function createImagePlaceholderToken_(index) {
+  return '[[G_DOC_IMAGE_' + index + ']]';
+}
+
+function uploadDocumentImages_(config, images, title) {
+  if (!images || images.length === 0) {
+    return [];
+  }
+
+  return images.map(function(image, index) {
+    const uploaded = uploadMedia_(config, image.blob, title + '-image-' + (index + 1));
+    return {
+      token: image.token,
+      url: uploaded.source_url || '',
+      alt: image.alt,
+    };
+  });
+}
+
+function uploadMedia_(config, blob, fallbackName) {
+  const contentType = normalizeString_(blob.getContentType()) || 'application/octet-stream';
+  const extension = contentTypeToExtension_(contentType);
+  const originalName = normalizeString_(blob.getName()) || fallbackName;
+  const filename = ensureFileExtension_(originalName, extension);
+  const url = config.apiRoot + '/media';
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: config.authHeader,
+      'Content-Disposition': 'attachment; filename="' + filename + '"',
+      'Content-Type': contentType,
+    },
+    payload: blob.getBytes(),
+  });
+
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw new Error('WordPressメディアアップロードエラー: HTTP ' + code + ' / ' + stripHtml_(response.getContentText()));
+  }
+
+  return JSON.parse(response.getContentText());
+}
+
+function contentTypeToExtension_(contentType) {
+  if (contentType === 'image/jpeg') return '.jpg';
+  if (contentType === 'image/png') return '.png';
+  if (contentType === 'image/gif') return '.gif';
+  if (contentType === 'image/webp') return '.webp';
+  return '';
+}
+
+function ensureFileExtension_(filename, extension) {
+  if (!extension) {
+    return filename;
+  }
+  return filename.toLowerCase().endsWith(extension) ? filename : filename + extension;
+}
+
+function replaceImagePlaceholders_(html, uploadedImages) {
+  let replaced = String(html);
+  uploadedImages.forEach(function(image) {
+    if (!image.url) {
+      return;
+    }
+    const alt = sanitizeInlineText_(image.alt || '');
+    const imageHtml = '<p><img src="' + sanitizeInlineText_(image.url) + '" alt="' + alt + '"></p>';
+    replaced = replaced.split(image.token).join(imageHtml);
+  });
+  return replaced;
 }
 
 function parseCsv_(value) {
